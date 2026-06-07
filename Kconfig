@@ -10,15 +10,23 @@ COLOR_WHITE   := 7
 
 config RGBLED_WIDGET
     bool "Enable RGB LED widget for showing battery and output status"
+    depends on ZMK_RGB_UNDERGLOW
 
 if RGBLED_WIDGET
-
-config LED
-    default y
 
 config RGBLED_WIDGET_INTERVAL_MS
     int "Minimum wait duration between two blinks in ms"
     default 500
+
+config RGBLED_WIDGET_BOOT_SHOW_BATTERY
+    bool "Show battery status during boot"
+    default y
+    depends on ZMK_BATTERY_REPORTING
+
+config RGBLED_WIDGET_BOOT_SHOW_CONNECTIVITY
+    bool "Show connectivity status during boot"
+    default y
+    depends on ZMK_USB || ZMK_BLE
 
 # Battery level settings
 
@@ -81,6 +89,29 @@ config RGBLED_WIDGET_BATTERY_COLOR_MISSING
     range 0 7
     default $(COLOR_MAGENTA)
 
+config RGBLED_WIDGET_BATTERY_STATUS_PIXELS
+    bool "Use five RGB underglow pixels for battery level"
+
+config RGBLED_WIDGET_BATTERY_STATUS_PIXEL_0
+    int "RGB underglow pixel index for the first battery segment"
+    default 0
+
+config RGBLED_WIDGET_BATTERY_STATUS_PIXEL_1
+    int "RGB underglow pixel index for the second battery segment"
+    default 1
+
+config RGBLED_WIDGET_BATTERY_STATUS_PIXEL_2
+    int "RGB underglow pixel index for the third battery segment"
+    default 2
+
+config RGBLED_WIDGET_BATTERY_STATUS_PIXEL_3
+    int "RGB underglow pixel index for the fourth battery segment"
+    default 3
+
+config RGBLED_WIDGET_BATTERY_STATUS_PIXEL_4
+    int "RGB underglow pixel index for the fifth battery segment"
+    default 4
+
 # Connectivity indicator settings
 config RGBLED_WIDGET_CONN_BLINK_MS
     int "Duration of BLE connection status blink in ms"
@@ -88,6 +119,33 @@ config RGBLED_WIDGET_CONN_BLINK_MS
 
 config RGBLED_WIDGET_CONN_SHOW_USB
     bool "Show USB indicator instead of BLE status if it has priority"
+
+config RGBLED_WIDGET_CONN_STATUS_PIXEL
+    bool "Use a single RGB underglow pixel for connectivity status"
+
+config RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX
+    int "RGB underglow pixel index for connectivity status"
+    default 0
+
+config RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_0
+    int "RGB underglow pixel index for BLE profile 0 connectivity status"
+    default RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX
+
+config RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_1
+    int "RGB underglow pixel index for BLE profile 1 connectivity status"
+    default RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX
+
+config RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_2
+    int "RGB underglow pixel index for BLE profile 2 connectivity status"
+    default RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX
+
+config RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_3
+    int "RGB underglow pixel index for BLE profile 3 connectivity status"
+    default RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX
+
+config RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_4
+    int "RGB underglow pixel index for BLE profile 4 connectivity status"
+    default RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX
 
 config RGBLED_WIDGET_OUTPUT_BLINK_MS  # DEPRECATED, do not use
     int

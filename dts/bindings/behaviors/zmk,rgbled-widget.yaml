@@ -11,3 +11,8 @@ properties:
     type: boolean
   indicate-layer:
     type: boolean
+  led-gpios:
+    type: phandle-array
+    description: |
+      Ignored compatibility property for older shield nodes that configured
+      discrete GPIO LEDs. The underglow backend uses zmk,underglow instead.
