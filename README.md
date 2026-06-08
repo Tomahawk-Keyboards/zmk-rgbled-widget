@@ -1,268 +1,237 @@
-# LED indicators using an RGB LED
+# RGB underglow status widget for ZMK
 
 > [!IMPORTANT]
-> This module uses a versioning scheme that is compatible with ZMK versions.
-> As a general rule, the `main` branch is targeting compatibility with ZMK's `main`.
->
-> **If you have build failures with ZMK's latest release (like `v0.3`) make sure to [use the corresponding revision](#installation) for `zmk-rgbled-widget` in your `west.yml`**.
+> This module targets ZMK configurations that use `CONFIG_ZMK_RGB_UNDERGLOW`.
+> It uses the keyboard's RGB underglow/backlight strip for battery, BLE, and layer status indication.
 
-This is a [ZMK module](https://zmk.dev/docs/features/modules) containing a simple widget that utilizes a (typically built-in) RGB LED controlled by three separate GPIOs.
-It is used to indicate battery level and BLE connection status in a minimalist way.
+This is a [ZMK module](https://zmk.dev/docs/features/modules) that shows keyboard status on an RGB underglow strip. It can temporarily borrow the whole strip, or use dedicated underglow status pixels when the ZMK underglow backend supports status channels.
 
 ## Features
 
-<details>
-  <summary>Short video demo</summary>
-  See below video for a short demo, running through power on, profile switching and power offs.
+### Battery Status
 
-  https://github.com/caksoylar/zmk-rgbled-widget/assets/7876996/cfd89dd1-ff24-4a33-8563-2fdad2a828d4
-</details>
+- Shows battery status on boot by default. Disable with `CONFIG_RGBLED_WIDGET_BOOT_SHOW_BATTERY=n`.
+- Provides `&ind_bat` for showing battery status on demand from a keymap.
+- Uses the configured battery colors:
+  - Green: at or above `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_HIGH`
+  - Yellow: at or above `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_LOW`
+  - Red: below `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_LOW`
+  - Magenta: current half battery not detected
+- Low/red battery display is solid red in the normal battery indicator path.
+- Critical battery changes still blink red as an alert when the level is at or below `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_CRITICAL`.
+- Enable `CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXELS` to show battery level on five configured underglow pixels instead of borrowing the whole strip.
 
-### Battery status
+### Split Battery Levels
 
-- Blink 🟢/🟡/🔴 on boot depending on battery level, with thresholds [set](#configuration-details) by `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_HIGH` and `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_LOW`
-  - See [options](#battery-levels-for-splits) for showing battery levels for splits
-- Blink 🔴 on every battery level change if below critical battery level (`CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_CRITICAL`)
+For split keyboards, each half reports its own battery by default.
 
-### Connection status
+On a split central, you can also include peripheral battery levels:
 
-- Blink 🔵 for connected, 🟡 for open (advertising), 🔴 for disconnected profiles on boot after the battery blink, and following every BT profile switch (only on central side for splits)
-  - Enable `CONFIG_RGBLED_WIDGET_CONN_SHOW_USB` to blink cyan if USB currently has priority over BLE, instead of above
-- Blink 🔵 for connected, 🔴 for disconnected on peripheral side of splits
+- `CONFIG_RGBLED_WIDGET_BATTERY_SHOW_PERIPHERALS`: use self plus peripheral levels
+- `CONFIG_RGBLED_WIDGET_BATTERY_SHOW_ONLY_PERIPHERALS`: use peripheral levels only
 
-### Layer state
+When peripheral levels are included, the widget displays the lowest available non-zero level. A peripheral level of `0` is treated as undetermined and skipped, so a sleeping or disconnected peripheral does not show as the magenta missing-battery state. Magenta is reserved for a current-side battery that cannot be detected.
 
-You can pick one of the following methods (off by default) to indicate the highest active layer:
+### Connection Status
 
-- Enable `CONFIG_RGBLED_WIDGET_SHOW_LAYER_CHANGE` to show the highest active layer on every layer activation
-  using a sequence of N cyan color blinks, where N is the zero-based index of the layer, or
-- Enable `CONFIG_RGBLED_WIDGET_SHOW_LAYER_COLORS` to assign each layer its own color, which will remain on while that layer is the highest active layer
+- Shows connectivity status on boot by default. Disable with `CONFIG_RGBLED_WIDGET_BOOT_SHOW_CONNECTIVITY=n`.
+- Provides `&ind_con` for showing connectivity status on demand from a keymap.
+- Uses the configured connectivity colors:
+  - Blue: connected
+  - Yellow: advertising/open
+  - Red: disconnected
+  - Cyan: USB endpoint active when `CONFIG_RGBLED_WIDGET_CONN_SHOW_USB=y`
+- Enable `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL` to show connectivity on a single underglow status pixel.
+- BLE profile status pixels can be configured per profile with `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_0` through `_4`.
+- When possible, the widget maps the active BLE profile to the underglow pixel for the key bound to `&bt BT_SEL <profile>`.
+- Advertising and disconnected states blink; connected states show solid color for the configured duration.
+- Duplicate connectivity indications are suppressed when the state has not changed.
 
-These layer indicators will only be active on the central part of a split keyboard, since peripheral parts aren't aware of the layer information.
+### Layer State
 
-> [!TIP]
-> Also see [below](#showing-status-on-demand) for keymap behaviors you can use to show the battery and connection status on demand.
+You can pick one layer indication mode. Both are off by default.
+
+- `CONFIG_RGBLED_WIDGET_SHOW_LAYER_CHANGE`: show the highest active layer when a layer activates.
+- `CONFIG_RGBLED_WIDGET_SHOW_LAYER_COLORS`: keep a configured color active while a layer is the highest active layer.
+
+For `CONFIG_RGBLED_WIDGET_SHOW_LAYER_CHANGE`, the widget tries to light the underglow pixels corresponding to keys that enable the active layer. If it cannot find matching keys, it falls back to a sequence of layer-color blinks.
+
+Layer indicators only run on non-split keyboards and split centrals because peripheral halves are not layer-aware.
+
+### Underglow Behavior
+
+Status indicators temporarily borrow the underglow strip and then restore the previous underglow state, including on/off state, color, and effect. If status-channel pixel APIs are unavailable, single-pixel and five-pixel status indicators fall back to whole-strip indication.
 
 ## Installation
 
-To use, first add this module to your `config/west.yml` by adding a new entry to `projects`:
+Add this module to your `config/west.yml`:
 
-```yaml west.yml
+```yaml
 manifest:
   remotes:
     - name: zmkfirmware
       url-base: https://github.com/zmkfirmware
+    - name: tomahawk-keyboards
+      url-base: https://github.com/Tomahawk-Keyboards
   projects:
     - name: zmk
       remote: zmkfirmware
-      revision: v0.3           # Your ZMK version
+      revision: main
       import: app/west.yml
-    - name: zmk-rgbled-widget  # <-- new entry
-      url: https://github.com/caksoylar/zmk-rgbled-widget
-      revision: v0.3           # MUST match your ZMK version!
+    - name: zmk-rgbled-widget
+      remote: tomahawk-keyboards
+      revision: main
   self:
     path: config
 ```
 
-For more information, including instructions for building locally, check out the ZMK docs on [building with modules](https://zmk.dev/docs/features/modules#building-with-modules).
-
-Then, if you are using one of the boards supported by the [`rgbled_adapter`](boards/shields/rgbled_adapter) shield such as Xiao BLE,
-just add the `rgbled_adapter` as an additional shield to your build, e.g. in `build.yaml`:
-
-```yaml build.yaml
----
-include:
-  - board: xiao_ble//zmk
-    shield: hummingbird rgbled_adapter
-```
-
-For other keyboards, see the ["Adding support" section](#adding-support-in-custom-boardsshields) below.
-
-## Showing status on demand
-
-This module also defines keymap [behaviors](https://zmk.dev/docs/keymaps/behaviors) to let you show battery or connection status on demand:
+Then include the behavior definitions in your keymap if you want on-demand indicators:
 
 ```dts
-#include <behaviors/rgbled_widget.dtsi>  // needed to use the behaviors
+#include <behaviors/rgbled_widget.dtsi>
+```
 
+## Basic Configuration
+
+Enable ZMK RGB underglow and the widget in your keyboard `.conf`:
+
+```ini
+CONFIG_ZMK_RGB_UNDERGLOW=y
+CONFIG_RGBLED_WIDGET=y
+```
+
+Optional startup behavior:
+
+```ini
+CONFIG_RGBLED_WIDGET_BOOT_SHOW_BATTERY=y
+CONFIG_RGBLED_WIDGET_BOOT_SHOW_CONNECTIVITY=y
+```
+
+Optional dedicated status pixels:
+
+```ini
+CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL=y
+CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX=0
+
+CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXELS=y
+CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXEL_0=6
+CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXEL_1=7
+CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXEL_2=8
+CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXEL_3=9
+CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXEL_4=10
+```
+
+## Showing Status On Demand
+
+This module defines keymap behaviors for battery, connectivity, and layer status:
+
+```dts
 / {
     keymap {
-        ...
         some_layer {
             bindings = <
-                ...
                 &ind_bat  // indicate battery level
                 &ind_con  // indicate connectivity status
-                ...
+                &ind_lyr  // indicate current layer
             >;
         };
     };
 };
 ```
 
-When you invoke the behavior by pressing the corresponding key (or combo), it will trigger the LED color display.
-This will happen on all keyboard parts for split keyboards, so make sure to flash firmware to all parts after enabling.
+The behavior runs on every keyboard half where `CONFIG_RGBLED_WIDGET=y` is enabled, so flash all relevant halves after changing widget settings.
 
-> [!NOTE]
-> The behaviors can be used even when you use split keyboards with different controllers that don't all support the widget.
-> Make sure that you use the `rgbled_adapter` shield (or enable `CONFIG_RGBLED_WIDGET` if not using the adapter) only for the keyboard parts that support it.
-
-## Battery levels for splits
-
-For split keyboards, each part will indicate its own battery level with a single battery blink, by default.
-However, for some scenarios like keyboards with dongles and no RGBLED widget on the peripherals, you might want the central part to show the battery levels of peripherals too.
-This can be done by enabling one of the below settings:
-
-- `CONFIG_RGBLED_WIDGET_BATTERY_SHOW_PERIPHERALS`: Blink for battery level of self and then the peripherals, in order
-- `CONFIG_RGBLED_WIDGET_BATTERY_SHOW_ONLY_PERIPHERALS`: Blink for battery level of only the peripherals, in order
-
-These two settings only apply to split central parts.
-The order of blinks for peripherals is determined by the initial pairing order for the split parts.
-If a part is currently disconnected, a magenta/purple ([configurable](#configuration-details)) blink will be displayed.
-
-## Configuration details
+## Configuration Reference
 
 <details>
 <summary>General</summary>
 
-| Name                               | Description                                    | Default |
-| ---------------------------------- | ---------------------------------------------- | ------- |
-| `CONFIG_RGBLED_WIDGET_INTERVAL_MS` | Minimum wait duration between two blinks in ms | 500     |
+| Name | Description | Default |
+| --- | --- | --- |
+| `CONFIG_RGBLED_WIDGET` | Enable the RGB underglow widget | `n` |
+| `CONFIG_RGBLED_WIDGET_INTERVAL_MS` | Minimum wait duration between indicator steps | `500` |
+| `CONFIG_RGBLED_WIDGET_BOOT_SHOW_BATTERY` | Show battery status during boot | `y` |
+| `CONFIG_RGBLED_WIDGET_BOOT_SHOW_CONNECTIVITY` | Show connectivity status during boot | `y` |
 
 </details>
 
 <details>
-<summary>Battery-related</summary>
+<summary>Battery</summary>
 
-| Name                                          | Description                                                           | Default       |
-| --------------------------------------------- | --------------------------------------------------------------------- | ------------- |
-| `CONFIG_RGBLED_WIDGET_BATTERY_BLINK_MS`       | Duration of battery level blink in ms                                 | 2000          |
-| `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_HIGH`     | High battery level percentage                                         | 80            |
-| `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_LOW`      | Low battery level percentage                                          | 20            |
-| `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_CRITICAL` | Critical battery level percentage, blink periodically if under        | 5             |
-| `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_CRITICAL` | Critical battery level percentage, blink periodically if under        | 5             |
-| `CONFIG_RGBLED_WIDGET_BATTERY_COLOR_HIGH`     | Color for high battery level (above `LEVEL_HIGH`)                     | Green (`2`)   |
-| `CONFIG_RGBLED_WIDGET_BATTERY_COLOR_MEDIUM`   | Color for medium battery level (between `LEVEL_LOW` and `LEVEL_HIGH`) | Yellow (`3`)  |
-| `CONFIG_RGBLED_WIDGET_BATTERY_COLOR_LOW`      | Color for low battery level (below `LEVEL_LOW`)                       | Red (`1`)     |
-| `CONFIG_RGBLED_WIDGET_BATTERY_COLOR_CRITICAL` | Color for critical battery level (below `LEVEL_CRITICAL`)             | Red (`1`)     |
-| `CONFIG_RGBLED_WIDGET_BATTERY_COLOR_MISSING`  | Color for battery not detected, or peripheral disconnected            | Magenta (`5`) |
-
-Only one of the options below can be enabled.
-The non-default ones (second and third below) only work on central parts of splits.
-
-| Name                                                 | Description                                             | Default |
-| ---------------------------------------------------- | ------------------------------------------------------- | ------- |
-| `CONFIG_RGBLED_WIDGET_BATTERY_SHOW_SELF`             | Indicate battery level from self only                   | `n`     |
-| `CONFIG_RGBLED_WIDGET_BATTERY_SHOW_PERIPHERALS`      | On a split central, also show peripheral battery levels | `n`     |
-| `CONFIG_RGBLED_WIDGET_BATTERY_SHOW_ONLY_PERIPHERALS` | On a split central, show only peripheral battery levels | `n`     |
-
-</details>
-
-<details>
-<summary>Connectivity-related</summary>
-
-| Name                                           | Description                                                 | Default      |
-| ---------------------------------------------- | ----------------------------------------------------------- | ------------ |
-| `CONFIG_RGBLED_WIDGET_CONN_BLINK_MS`           | Duration of BLE connection status blink in ms               | 1000         |
-| `CONFIG_RGBLED_WIDGET_CONN_SHOW_USB`           | Show USB indicator instead of BLE status if it has priority | `n`          |
-| `CONFIG_RGBLED_WIDGET_CONN_COLOR_CONNECTED`    | Color for connected BLE connection status                   | Blue (`4`)   |
-| `CONFIG_RGBLED_WIDGET_CONN_COLOR_ADVERTISING`  | Color for advertising BLE connection status                 | Yellow (`3`) |
-| `CONFIG_RGBLED_WIDGET_CONN_COLOR_DISCONNECTED` | Color for disconnected BLE connection status                | Red (`1`)    |
-| `CONFIG_RGBLED_WIDGET_CONN_COLOR_USB`          | Color for USB endpoint active                               | Cyan (`6`)   |
+| Name | Description | Default |
+| --- | --- | --- |
+| `CONFIG_RGBLED_WIDGET_BATTERY_BLINK_MS` | Duration of battery indication | `2000` |
+| `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_HIGH` | High battery threshold | `80` |
+| `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_LOW` | Low battery threshold | `20` |
+| `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_CRITICAL` | Critical battery threshold for warning blinks | `5` |
+| `CONFIG_RGBLED_WIDGET_BATTERY_COLOR_HIGH` | Color for high battery level | Green (`2`) |
+| `CONFIG_RGBLED_WIDGET_BATTERY_COLOR_MEDIUM` | Color for medium battery level | Yellow (`3`) |
+| `CONFIG_RGBLED_WIDGET_BATTERY_COLOR_LOW` | Color for low battery level | Red (`1`) |
+| `CONFIG_RGBLED_WIDGET_BATTERY_COLOR_CRITICAL` | Color for critical battery warning | Red (`1`) |
+| `CONFIG_RGBLED_WIDGET_BATTERY_COLOR_MISSING` | Color for battery not detected | Magenta (`5`) |
+| `CONFIG_RGBLED_WIDGET_BATTERY_SHOW_SELF` | Indicate self battery only | `n` |
+| `CONFIG_RGBLED_WIDGET_BATTERY_SHOW_PERIPHERALS` | On a split central, include peripheral battery levels | `n` |
+| `CONFIG_RGBLED_WIDGET_BATTERY_SHOW_ONLY_PERIPHERALS` | On a split central, show peripheral battery levels only | `n` |
+| `CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXELS` | Use five RGB underglow pixels for battery level | `n` |
+| `CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXEL_0` | First battery segment pixel index | `0` |
+| `CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXEL_1` | Second battery segment pixel index | `1` |
+| `CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXEL_2` | Third battery segment pixel index | `2` |
+| `CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXEL_3` | Fourth battery segment pixel index | `3` |
+| `CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXEL_4` | Fifth battery segment pixel index | `4` |
 
 </details>
 
 <details>
-<summary>Layers-related</summary>
+<summary>Connectivity</summary>
 
-Layer indicator only works on non-splits and central parts of splits.
-
-Below enable and configure the sequence-based layer indicator.
-
-| Name                                     | Description                                                                  | Default    |
-| ---------------------------------------- | ---------------------------------------------------------------------------- | ---------- |
-| `CONFIG_RGBLED_WIDGET_SHOW_LAYER_CHANGE` | Indicate highest active layer on each layer change with a sequence of blinks | `n`        |
-| `CONFIG_RGBLED_WIDGET_LAYER_BLINK_MS`    | Blink and wait duration for layer indicator                                  | 100        |
-| `CONFIG_RGBLED_WIDGET_LAYER_COLOR`       | Color to use for layer indicator                                             | Cyan (`6`) |
-| `CONFIG_RGBLED_WIDGET_LAYER_DEBOUNCE_MS` | Wait duration after a layer change before showing the highest active layer   | 100        |
-
-Below enable and configure the color-based layer indicator.
-
-| Name                                     | Description                                                                | Default       |
-| ---------------------------------------- | -------------------------------------------------------------------------- | ------------- |
-| `CONFIG_RGBLED_WIDGET_SHOW_LAYER_COLORS` | Indicate highest active layer with a constant configurable color per layer | `n`           |
-| `CONFIG_RGBLED_WIDGET_LAYER_0_COLOR`     | Color to use for the base layer                                            | Black (`0`)   |
-| `CONFIG_RGBLED_WIDGET_LAYER_1_COLOR`     | Color to use for layer 1                                                   | Red (`1`)     |
-| `CONFIG_RGBLED_WIDGET_LAYER_2_COLOR`     | Color to use for layer 2                                                   | Green (`2`)   |
-| `CONFIG_RGBLED_WIDGET_LAYER_3_COLOR`     | Color to use for layer 3                                                   | Yellow (`3`)  |
-| `CONFIG_RGBLED_WIDGET_LAYER_4_COLOR`     | Color to use for layer 4                                                   | Blue (`4`)    |
-| `CONFIG_RGBLED_WIDGET_LAYER_5_COLOR`     | Color to use for layer 5                                                   | Magenta (`5`) |
-| `CONFIG_RGBLED_WIDGET_LAYER_6_COLOR`     | Color to use for layer 6                                                   | Cyan (`6`)    |
-| `CONFIG_RGBLED_WIDGET_LAYER_7_COLOR`     | Color to use for layer 7                                                   | White (`7`)   |
-| `CONFIG_RGBLED_WIDGET_LAYER_xx_COLOR`    | Color to use for layer xx (change xx to the layer number to change)        | Black (`0`)   |
+| Name | Description | Default |
+| --- | --- | --- |
+| `CONFIG_RGBLED_WIDGET_CONN_BLINK_MS` | Duration of BLE connection status indication | `1000` |
+| `CONFIG_RGBLED_WIDGET_CONN_SHOW_USB` | Show USB indicator instead of BLE status when USB has priority | `n` |
+| `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL` | Use a single RGB underglow pixel for connectivity status | `n` |
+| `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX` | Default connectivity status pixel index | `0` |
+| `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_0` | Connectivity status pixel for BLE profile 0 | `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX` |
+| `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_1` | Connectivity status pixel for BLE profile 1 | `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX` |
+| `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_2` | Connectivity status pixel for BLE profile 2 | `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX` |
+| `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_3` | Connectivity status pixel for BLE profile 3 | `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX` |
+| `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_4` | Connectivity status pixel for BLE profile 4 | `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX` |
+| `CONFIG_RGBLED_WIDGET_CONN_COLOR_CONNECTED` | Color for connected BLE status | Blue (`4`) |
+| `CONFIG_RGBLED_WIDGET_CONN_COLOR_ADVERTISING` | Color for advertising BLE status | Yellow (`3`) |
+| `CONFIG_RGBLED_WIDGET_CONN_COLOR_DISCONNECTED` | Color for disconnected BLE status | Red (`1`) |
+| `CONFIG_RGBLED_WIDGET_CONN_COLOR_USB` | Color for USB endpoint active | Cyan (`6`) |
 
 </details>
 
 <details>
-<summary>Mapping for color values</summary>
-Color settings use the following integer values:
+<summary>Layers</summary>
 
-| Color        | Value |
-| ------------ | ----- |
-| Black (none) | `0`   |
-| Red          | `1`   |
-| Green        | `2`   |
-| Yellow       | `3`   |
-| Blue         | `4`   |
-| Magenta      | `5`   |
-| Cyan         | `6`   |
-| White        | `7`   |
+| Name | Description | Default |
+| --- | --- | --- |
+| `CONFIG_RGBLED_WIDGET_SHOW_LAYER_CHANGE` | Indicate highest active layer on layer activation | `n` |
+| `CONFIG_RGBLED_WIDGET_LAYER_BLINK_MS` | Blink/wait duration for layer indicator | `100` |
+| `CONFIG_RGBLED_WIDGET_LAYER_COLOR` | Color for sequence-based layer indication | Cyan (`6`) |
+| `CONFIG_RGBLED_WIDGET_LAYER_DEBOUNCE_MS` | Delay after layer change before indicating | `100` |
+| `CONFIG_RGBLED_WIDGET_SHOW_LAYER_COLORS` | Keep a configured color active for each layer | `n` |
+| `CONFIG_RGBLED_WIDGET_LAYER_0_COLOR` through `CONFIG_RGBLED_WIDGET_LAYER_31_COLOR` | Per-layer colors for color-based layer indication | Layer 0 black, 1 red, 2 green, 3 yellow, 4 blue, 5 magenta, 6 cyan, 7 white, 8-31 black |
 
 </details>
 
-You can add these settings to your keyboard conf file to modify the config values, e.g. in `config/hummingbird.conf`:
+<details>
+<summary>Color Values</summary>
 
-```ini
-CONFIG_RGBLED_WIDGET_INTERVAL_MS=250
-CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_HIGH=50
-CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_CRITICAL=10
-```
+| Color | Value |
+| --- | --- |
+| Black/off | `0` |
+| Red | `1` |
+| Green | `2` |
+| Yellow | `3` |
+| Blue | `4` |
+| Magenta | `5` |
+| Cyan | `6` |
+| White | `7` |
 
-## Adding support in custom boards/shields
+</details>
 
-To be able to use this widget, you need three LEDs controlled by GPIOs (_not_ smart LEDs), ideally red, green and blue colors.
-Once you have these LED definitions in your board/shield, simply set the appropriate `aliases` to the RGB LED node labels.
+## Legacy Compatibility
 
-As an example, here is a definition for three LEDs connected to VCC and separate GPIOs for a nRF52840 controller:
-
-```dts
-/ {
-    aliases {
-        led-red = &led0;
-        led-green = &led1;
-        led-blue = &led2;
-    };
-
-    leds {
-        compatible = "gpio-leds";
-        status = "okay";
-        led0: led_0 {
-            gpios = <&gpio0 26 GPIO_ACTIVE_LOW>;  // red LED, connected to P0.26
-        };
-        led1: led_1 {
-            gpios = <&gpio0 30 GPIO_ACTIVE_LOW>;  // green LED, connected to P0.30
-        };
-        led2: led_2 {
-            gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;  // blue LED, connected to P0.06
-        };
-    };
-};
-```
-
-(If the LEDs are wired between GPIO and GND instead, use `GPIO_ACTIVE_HIGH` flag.)
-
-Finally, turn on the widget in the configuration:
-
-```ini
-CONFIG_RGBLED_WIDGET=y
-```
+Older versions of this module used discrete GPIO RGB LEDs and the `rgbled_adapter` shield. The current widget uses ZMK RGB underglow instead. The behavior binding still accepts `led-gpios` as an ignored compatibility property for older devicetree nodes, but new configurations should use `CONFIG_ZMK_RGB_UNDERGLOW` and underglow pixel settings instead.

@@ -85,7 +85,7 @@ config RGBLED_WIDGET_BATTERY_COLOR_CRITICAL
     default $(COLOR_RED)
 
 config RGBLED_WIDGET_BATTERY_COLOR_MISSING
-    int "Color for battery not detected, or peripheral disconnected"
+    int "Color for battery not detected"
     range 0 7
     default $(COLOR_MAGENTA)
 

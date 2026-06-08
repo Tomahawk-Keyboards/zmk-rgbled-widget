@@ -748,8 +748,13 @@ void indicate_battery(void) {
                 zmk_split_central_get_peripheral_battery_level(i, &peripheral_level);
             }
 
+            if (peripheral_level == 0) {
+                LOG_INF("Skipping undetermined battery level for peripheral %d", i);
+                continue;
+            }
+
             LOG_INF("Got battery level for peripheral %d:", i);
-            if (!has_battery_level || peripheral_level == 0 ||
+            if (!has_battery_level ||
                 (battery_level_to_show != 0 && peripheral_level < battery_level_to_show)) {
                 battery_level_to_show = peripheral_level;
             }
