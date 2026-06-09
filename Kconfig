@@ -52,6 +52,11 @@ config RGBLED_WIDGET_BATTERY_BLINK_MS
     int "Duration of battery indication in ms"
     default 2000
 
+config RGBLED_WIDGET_BATTERY_FILL_STEP_MS
+    int "Battery status pixel fill animation step duration in ms"
+    range 1 1000
+    default 100
+
 config RGBLED_WIDGET_BATTERY_LEVEL_HIGH
     int "High battery level percentage"
     default 80

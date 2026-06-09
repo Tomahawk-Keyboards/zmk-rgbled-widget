@@ -161,6 +161,7 @@ The behavior runs on every keyboard half where `CONFIG_RGBLED_WIDGET=y` is enabl
 | Name | Description | Default |
 | --- | --- | --- |
 | `CONFIG_RGBLED_WIDGET_BATTERY_BLINK_MS` | Duration of battery indication | `2000` |
+| `CONFIG_RGBLED_WIDGET_BATTERY_FILL_STEP_MS` | Battery status pixel fill animation step duration | `100` |
 | `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_HIGH` | High battery threshold | `80` |
 | `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_LOW` | Low battery threshold | `20` |
 | `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_CRITICAL` | Critical battery threshold for warning blinks | `5` |

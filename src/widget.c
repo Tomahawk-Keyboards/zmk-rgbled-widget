@@ -307,7 +307,8 @@ static void animate_status_pixels(const struct blink_item *blink) {
     }
 
     uint32_t elapsed_ms = 0;
-    uint32_t step_ms = MIN(CONFIG_RGBLED_WIDGET_INTERVAL_MS, blink->duration_ms / (pixel_count + 1));
+    uint32_t step_ms = MIN(CONFIG_RGBLED_WIDGET_BATTERY_FILL_STEP_MS,
+                           blink->duration_ms / (fill_count + 1));
 
     if (step_ms == 0) {
         step_ms = 1;
