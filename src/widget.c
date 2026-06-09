@@ -56,7 +56,8 @@ static const struct zmk_led_hsb color_hsb[] = {
     {0, 0, 100},     // white
 };
 
-#define STATUS_PIXELS_MAX 5
+#define BATTERY_STATUS_PIXELS_MAX 5
+#define STATUS_PIXELS_MAX MAX(BATTERY_STATUS_PIXELS_MAX, ZMK_KEYMAP_LEN)
 
 #if SHOW_LAYER_COLORS
 static const uint8_t layer_color_idx[] = {
@@ -90,7 +91,7 @@ static const uint8_t layer_color_idx[] = {
     LOG_INF("Battery level %d, indicating %s", battery_level,                                      \
             color_names[CONFIG_RGBLED_WIDGET_BATTERY_COLOR_##color_label])
 
-// a blink work item as specified by the color and duration
+// a queued LED work item as specified by the color and duration
 struct blink_item {
     uint8_t color;
     uint32_t duration_ms;
@@ -106,6 +107,7 @@ struct blink_item {
     bool blink_until_connected;
     bool blink_status_pixel;
     bool animate_status_pixels;
+    bool status_pixels_only;
     bool use_status_pixel;
     bool use_status_pixels;
 };
@@ -258,7 +260,11 @@ static bool set_status_pixels_led(const struct blink_item *blink, uint8_t color,
     }
 
     if (!warned_unavailable) {
-        LOG_WRN("Multi-pixel battery indicator unavailable (%d), using full underglow", ret);
+        if (blink->status_pixels_only) {
+            LOG_WRN("Multi-pixel status indicator unavailable (%d), skipping status pixels", ret);
+        } else {
+            LOG_WRN("Multi-pixel status indicator unavailable (%d), using full underglow", ret);
+        }
         warned_unavailable = true;
     }
 #endif
@@ -268,8 +274,18 @@ static bool set_status_pixels_led(const struct blink_item *blink, uint8_t color,
 
 static void set_indicator_leds(const struct blink_item *blink, uint8_t color,
                                uint32_t duration_ms) {
-    if (blink->use_status_pixels && set_status_pixels_led(blink, color, duration_ms)) {
-        return;
+    if (blink->use_status_pixels) {
+        if (set_status_pixels_led(blink, color, duration_ms)) {
+            return;
+        }
+
+        if (blink->status_pixels_only) {
+            if (duration_ms > 0) {
+                k_sleep(K_MSEC(duration_ms));
+            }
+
+            return;
+        }
     }
 
     if (blink->use_status_pixel &&
@@ -291,8 +307,7 @@ static void animate_status_pixels(const struct blink_item *blink) {
     }
 
     uint32_t elapsed_ms = 0;
-    uint32_t step_ms = MIN(CONFIG_RGBLED_WIDGET_INTERVAL_MS,
-                           blink->duration_ms / (STATUS_PIXELS_MAX + 1));
+    uint32_t step_ms = MIN(CONFIG_RGBLED_WIDGET_INTERVAL_MS, blink->duration_ms / (pixel_count + 1));
 
     if (step_ms == 0) {
         step_ms = 1;
@@ -428,7 +443,7 @@ static bool should_continue_advertising_blink(void) {
 #endif
 }
 
-// define message queue of blink work items, that will be processed by a
+// define message queue of LED work items, that will be processed by a
 // separate thread
 K_MSGQ_DEFINE(led_msgq, sizeof(struct blink_item), 16, 1);
 
@@ -677,31 +692,74 @@ static void configure_battery_status_pixels(struct blink_item *blink, uint8_t ba
 #endif
 }
 
-static bool binding_enables_layer(const struct zmk_behavior_binding *binding,
-                                  zmk_keymap_layer_id_t layer_id) {
-    if (binding == NULL || binding->behavior_dev == NULL || binding->param1 != layer_id) {
+static bool binding_uses_behavior(const struct zmk_behavior_binding *binding,
+                                  const char *behavior_dev) {
+    if (binding == NULL || binding->behavior_dev == NULL || behavior_dev == NULL) {
         return false;
     }
 
-#if DT_NODE_EXISTS(DT_NODELABEL(mo))
-    if (strcmp(binding->behavior_dev, DEVICE_DT_NAME(DT_NODELABEL(mo))) == 0) {
+    return strcmp(binding->behavior_dev, behavior_dev) == 0;
+}
+
+static bool binding_is_transparent(const struct zmk_behavior_binding *binding) {
+#if DT_NODE_EXISTS(DT_NODELABEL(trans))
+    if (binding_uses_behavior(binding, DEVICE_DT_NAME(DT_NODELABEL(trans)))) {
         return true;
     }
 #endif
 
-#if DT_NODE_EXISTS(DT_NODELABEL(tog))
-    if (strcmp(binding->behavior_dev, DEVICE_DT_NAME(DT_NODELABEL(tog))) == 0) {
-        return true;
-    }
-#endif
-
-#if DT_NODE_EXISTS(DT_NODELABEL(to))
-    if (strcmp(binding->behavior_dev, DEVICE_DT_NAME(DT_NODELABEL(to))) == 0) {
+#if DT_NODE_EXISTS(DT_NODELABEL(transparent))
+    if (binding_uses_behavior(binding, DEVICE_DT_NAME(DT_NODELABEL(transparent)))) {
         return true;
     }
 #endif
 
     return false;
+}
+
+static bool binding_is_layer_switch(const struct zmk_behavior_binding *binding) {
+#if DT_NODE_EXISTS(DT_NODELABEL(mo))
+    if (binding_uses_behavior(binding, DEVICE_DT_NAME(DT_NODELABEL(mo)))) {
+        return true;
+    }
+#endif
+
+#if DT_NODE_EXISTS(DT_NODELABEL(to))
+    if (binding_uses_behavior(binding, DEVICE_DT_NAME(DT_NODELABEL(to)))) {
+        return true;
+    }
+#endif
+
+#if DT_NODE_EXISTS(DT_NODELABEL(tog))
+    if (binding_uses_behavior(binding, DEVICE_DT_NAME(DT_NODELABEL(tog)))) {
+        return true;
+    }
+#endif
+
+#if DT_NODE_EXISTS(DT_NODELABEL(lt))
+    if (binding_uses_behavior(binding, DEVICE_DT_NAME(DT_NODELABEL(lt)))) {
+        return true;
+    }
+#endif
+
+#if DT_NODE_EXISTS(DT_NODELABEL(sl))
+    if (binding_uses_behavior(binding, DEVICE_DT_NAME(DT_NODELABEL(sl)))) {
+        return true;
+    }
+#endif
+
+#if DT_NODE_EXISTS(DT_NODELABEL(df))
+    if (binding_uses_behavior(binding, DEVICE_DT_NAME(DT_NODELABEL(df)))) {
+        return true;
+    }
+#endif
+
+    return false;
+}
+
+static bool binding_should_highlight_on_layer(const struct zmk_behavior_binding *binding) {
+    return binding != NULL && binding->behavior_dev != NULL && !binding_is_transparent(binding) &&
+           !binding_is_layer_switch(binding);
 }
 
 static bool configure_layer_status_pixels(struct blink_item *blink,
@@ -714,38 +772,30 @@ static bool configure_layer_status_pixels(struct blink_item *blink,
     }
 
     blink->use_status_pixels = true;
+    blink->status_pixels_only = true;
     blink->status_channel = ZMK_RGB_UNDERGLOW_STATUS_CHANNEL_LAYER;
     blink->status_pixel_count = 0;
 
-    for (zmk_keymap_layer_index_t scan_layer_index = 0; scan_layer_index < ZMK_KEYMAP_LAYERS_LEN;
-         scan_layer_index++) {
-        zmk_keymap_layer_id_t scan_layer_id = zmk_keymap_layer_index_to_id(scan_layer_index);
+    for (uint16_t position = 0; position < ZMK_KEYMAP_LEN; position++) {
+        const struct zmk_behavior_binding *binding =
+            zmk_keymap_get_layer_binding_at_idx(target_layer_id, position);
 
-        if (scan_layer_id == ZMK_KEYMAP_LAYER_ID_INVAL) {
+        if (!binding_should_highlight_on_layer(binding)) {
             continue;
         }
 
-        for (uint16_t position = 0; position < ZMK_KEYMAP_LEN; position++) {
-            const struct zmk_behavior_binding *binding =
-                zmk_keymap_get_layer_binding_at_idx(scan_layer_id, position);
+        uint16_t pixel;
 
-            if (!binding_enables_layer(binding, target_layer_id)) {
-                continue;
-            }
+        if (!key_position_to_status_pixel(position, &pixel)) {
+            continue;
+        }
 
-            uint16_t pixel;
+        blink->status_pixel_indices[blink->status_pixel_count] = pixel;
+        blink->status_pixel_colors[blink->status_pixel_count] = blink->color;
+        blink->status_pixel_count++;
 
-            if (!key_position_to_status_pixel(position, &pixel)) {
-                continue;
-            }
-
-            blink->status_pixel_indices[blink->status_pixel_count] = pixel;
-            blink->status_pixel_colors[blink->status_pixel_count] = blink->color;
-            blink->status_pixel_count++;
-
-            if (blink->status_pixel_count >= STATUS_PIXELS_MAX) {
-                return true;
-            }
+        if (blink->status_pixel_count >= STATUS_PIXELS_MAX) {
+            return true;
         }
     }
 
@@ -883,41 +933,38 @@ ZMK_SUBSCRIPTION(led_layer_color_listener, zmk_activity_state_changed);
 #endif // SHOW_LAYER_COLORS
 
 #if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+static bool underglow_is_on(void) {
+    bool on = false;
+    int ret = zmk_rgb_underglow_get_state(&on);
+
+    if (ret < 0) {
+        LOG_WRN("Unable to read RGB underglow state for layer highlight (%d)", ret);
+        return false;
+    }
+
+    return on;
+}
+
 void indicate_layer(void) {
     uint8_t index = zmk_keymap_highest_layer_active();
     struct blink_item layer_indicator = {.duration_ms = CONFIG_RGBLED_WIDGET_LAYER_BLINK_MS,
                                          .color = CONFIG_RGBLED_WIDGET_LAYER_COLOR,
                                          .sleep_ms = CONFIG_RGBLED_WIDGET_LAYER_BLINK_MS};
 
+    if (!underglow_is_on()) {
+        LOG_DBG("Skipping layer highlight because RGB underglow is off");
+        return;
+    }
+
     if (configure_layer_status_pixels(&layer_indicator, index)) {
-        LOG_INF("Showing %d layer key(s) for layer %d in %s", layer_indicator.status_pixel_count,
-                index, color_names[CONFIG_RGBLED_WIDGET_LAYER_COLOR]);
+        LOG_INF("Highlighting %d defined key(s) for layer %d in %s",
+                layer_indicator.status_pixel_count, index,
+                color_names[CONFIG_RGBLED_WIDGET_LAYER_COLOR]);
         k_msgq_put(&led_msgq, &layer_indicator, K_NO_WAIT);
         return;
     }
 
-    static const struct blink_item blink = {
-        .duration_ms = CONFIG_RGBLED_WIDGET_LAYER_BLINK_MS,
-        .color = CONFIG_RGBLED_WIDGET_LAYER_COLOR,
-        .sleep_ms = CONFIG_RGBLED_WIDGET_LAYER_BLINK_MS,
-        .status_channel = ZMK_RGB_UNDERGLOW_STATUS_CHANNEL_LAYER,
-    };
-    static const struct blink_item last_blink = {
-        .duration_ms = CONFIG_RGBLED_WIDGET_LAYER_BLINK_MS,
-        .color = CONFIG_RGBLED_WIDGET_LAYER_COLOR,
-        .status_channel = ZMK_RGB_UNDERGLOW_STATUS_CHANNEL_LAYER,
-    };
-
-    LOG_INF("No layer key found, blinking %d times %s for layer change", index,
-            color_names[CONFIG_RGBLED_WIDGET_LAYER_COLOR]);
-
-    for (int i = 0; i < index; i++) {
-        if (i < index - 1) {
-            k_msgq_put(&led_msgq, &blink, K_NO_WAIT);
-        } else {
-            k_msgq_put(&led_msgq, &last_blink, K_NO_WAIT);
-        }
-    }
+    LOG_INF("No highlightable key found for layer %d", index);
 }
 #endif // !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
 
@@ -925,8 +972,10 @@ void indicate_layer(void) {
 static struct k_work_delayable layer_indicate_work;
 
 static int led_layer_listener_cb(const zmk_event_t *eh) {
-    // ignore if not initialized yet or layer off events
-    if (initialized && as_zmk_layer_state_changed(eh)->state) {
+    ARG_UNUSED(eh);
+
+    // Debounce layer changes so the highlight reflects the final highest active layer.
+    if (initialized) {
         k_work_reschedule(&layer_indicate_work, K_MSEC(CONFIG_RGBLED_WIDGET_LAYER_DEBOUNCE_MS));
     }
     return 0;

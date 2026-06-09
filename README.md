@@ -51,10 +51,10 @@ When peripheral levels are included, the widget displays the lowest available no
 
 You can pick one layer indication mode. Both are off by default.
 
-- `CONFIG_RGBLED_WIDGET_SHOW_LAYER_CHANGE`: show the highest active layer when a layer activates.
+- `CONFIG_RGBLED_WIDGET_SHOW_LAYER_CHANGE`: highlight keys defined on the highest active layer when the layer changes.
 - `CONFIG_RGBLED_WIDGET_SHOW_LAYER_COLORS`: keep a configured color active while a layer is the highest active layer.
 
-For `CONFIG_RGBLED_WIDGET_SHOW_LAYER_CHANGE`, the widget tries to light the underglow pixels corresponding to keys that enable the active layer. If it cannot find matching keys, it falls back to a sequence of layer-color blinks.
+For `CONFIG_RGBLED_WIDGET_SHOW_LAYER_CHANGE`, the widget highlights the keys defined directly on the highest active layer while RGB underglow/backlight is on. Transparent bindings and layer-switch bindings are skipped.
 
 Layer indicators only run on non-split keyboards and split centrals because peripheral halves are not layer-aware.
 
@@ -207,9 +207,9 @@ The behavior runs on every keyboard half where `CONFIG_RGBLED_WIDGET=y` is enabl
 
 | Name | Description | Default |
 | --- | --- | --- |
-| `CONFIG_RGBLED_WIDGET_SHOW_LAYER_CHANGE` | Indicate highest active layer on layer activation | `n` |
-| `CONFIG_RGBLED_WIDGET_LAYER_BLINK_MS` | Blink/wait duration for layer indicator | `100` |
-| `CONFIG_RGBLED_WIDGET_LAYER_COLOR` | Color for sequence-based layer indication | Cyan (`6`) |
+| `CONFIG_RGBLED_WIDGET_SHOW_LAYER_CHANGE` | Highlight keys defined on the highest active layer when the layer changes | `n` |
+| `CONFIG_RGBLED_WIDGET_LAYER_BLINK_MS` | Duration for layer highlights | `100` |
+| `CONFIG_RGBLED_WIDGET_LAYER_COLOR` | Color for layer highlights | Cyan (`6`) |
 | `CONFIG_RGBLED_WIDGET_LAYER_DEBOUNCE_MS` | Delay after layer change before indicating | `100` |
 | `CONFIG_RGBLED_WIDGET_SHOW_LAYER_COLORS` | Keep a configured color active for each layer | `n` |
 | `CONFIG_RGBLED_WIDGET_LAYER_0_COLOR` through `CONFIG_RGBLED_WIDGET_LAYER_31_COLOR` | Per-layer colors for color-based layer indication | Layer 0 black, 1 red, 2 green, 3 yellow, 4 blue, 5 magenta, 6 cyan, 7 white, 8-31 black |

@@ -173,14 +173,14 @@ config RGBLED_WIDGET_CONN_COLOR_USB
 
 # Layer indicator settings
 config RGBLED_WIDGET_SHOW_LAYER_CHANGE
-    bool "Indicate highest active layer on each layer change with a sequence of blinks"
+    bool "Highlight keys defined on the highest active layer when the layer changes"
 
 config RGBLED_WIDGET_LAYER_BLINK_MS
-    int "Blink and wait duration for layer indicator"
+    int "Duration for layer highlights"
     default 100
 
 config RGBLED_WIDGET_LAYER_COLOR
-    int "Color to use for layer indicator"
+    int "Color to use for layer highlights"
     range 0 7
     default $(COLOR_CYAN)
 
