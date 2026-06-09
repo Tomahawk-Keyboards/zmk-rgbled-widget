@@ -19,7 +19,7 @@ This is a [ZMK module](https://zmk.dev/docs/features/modules) that shows keyboar
   - Magenta: current half battery not detected
 - Low/red battery display is solid red in the normal battery indicator path.
 - Critical battery changes still blink red as an alert when the level is at or below `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_CRITICAL`.
-- Enable `CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXELS` to show battery level on five configured underglow pixels instead of borrowing the whole strip.
+- Enable `CONFIG_RGBLED_WIDGET_BATTERY_STATUS_PIXELS` to show battery level on five configured underglow pixels instead of borrowing the whole strip. The indicator fills the bar one segment at a time, then holds the final level until the battery indication timeout ends.
 
 ### Split Battery Levels
 

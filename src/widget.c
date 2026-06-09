@@ -87,7 +87,7 @@ static const uint8_t layer_color_idx[] = {
     LOG_INF("Peripheral %s, blinking %s", status,                                                  \
             color_names[CONFIG_RGBLED_WIDGET_CONN_COLOR_##color_label])
 #define LOG_BATTERY(battery_level, color_label)                                                    \
-    LOG_INF("Battery level %d, blinking %s", battery_level,                                        \
+    LOG_INF("Battery level %d, indicating %s", battery_level,                                      \
             color_names[CONFIG_RGBLED_WIDGET_BATTERY_COLOR_##color_label])
 
 // a blink work item as specified by the color and duration
@@ -99,11 +99,13 @@ struct blink_item {
     uint16_t status_pixel_indices[STATUS_PIXELS_MAX];
     uint8_t status_pixel_colors[STATUS_PIXELS_MAX];
     uint8_t status_pixel_count;
+    uint8_t status_pixel_fill_count;
     uint8_t status_pixel_blink_index;
     uint8_t status_channel;
     bool blink;
     bool blink_until_connected;
     bool blink_status_pixel;
+    bool animate_status_pixels;
     bool use_status_pixel;
     bool use_status_pixels;
 };
@@ -277,6 +279,46 @@ static void set_indicator_leds(const struct blink_item *blink, uint8_t color,
     }
 
     set_rgb_leds(color, duration_ms);
+}
+
+static void animate_status_pixels(const struct blink_item *blink) {
+    uint8_t pixel_count = MIN(blink->status_pixel_count, (uint8_t)STATUS_PIXELS_MAX);
+    uint8_t fill_count = MIN(blink->status_pixel_fill_count, pixel_count);
+
+    if (fill_count == 0) {
+        set_indicator_leds(blink, blink->color, blink->duration_ms);
+        return;
+    }
+
+    uint32_t elapsed_ms = 0;
+    uint32_t step_ms = MIN(CONFIG_RGBLED_WIDGET_INTERVAL_MS,
+                           blink->duration_ms / (STATUS_PIXELS_MAX + 1));
+
+    if (step_ms == 0) {
+        step_ms = 1;
+    }
+
+    for (uint8_t visible_count = 1;
+         visible_count <= fill_count && elapsed_ms < blink->duration_ms; visible_count++) {
+        struct blink_item step = *blink;
+
+        step.animate_status_pixels = false;
+        step.blink_status_pixel = false;
+
+        for (uint8_t i = visible_count; i < pixel_count; i++) {
+            step.status_pixel_colors[i] = 0;
+        }
+
+        uint32_t remaining_ms = blink->duration_ms - elapsed_ms;
+        uint32_t current_step_ms = MIN(step_ms, remaining_ms);
+
+        set_indicator_leds(&step, blink->color, current_step_ms);
+        elapsed_ms += current_step_ms;
+    }
+
+    if (elapsed_ms < blink->duration_ms) {
+        set_indicator_leds(blink, blink->color, blink->duration_ms - elapsed_ms);
+    }
 }
 
 static bool key_position_to_status_pixel(uint16_t position, uint16_t *pixel) {
@@ -588,7 +630,7 @@ ZMK_SUBSCRIPTION(led_output_listener, zmk_split_peripheral_status_changed);
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
 static inline uint8_t get_battery_color(uint8_t battery_level) {
     if (battery_level == 0) {
-        LOG_INF("Battery level undetermined (zero), blinking %s",
+        LOG_INF("Battery level undetermined (zero), indicating %s",
                 color_names[CONFIG_RGBLED_WIDGET_BATTERY_COLOR_MISSING]);
         return CONFIG_RGBLED_WIDGET_BATTERY_COLOR_MISSING;
     }
@@ -620,8 +662,9 @@ static void configure_battery_status_pixels(struct blink_item *blink, uint8_t ba
     blink->use_status_pixels = true;
     blink->status_channel = ZMK_RGB_UNDERGLOW_STATUS_CHANNEL_BATTERY;
     blink->status_pixel_count = ARRAY_SIZE(battery_status_pixels);
-    blink->blink = true;
-    blink->blink_status_pixel = true;
+    blink->status_pixel_fill_count = filled_segments;
+    blink->blink_status_pixel = blink->blink;
+    blink->animate_status_pixels = !blink->blink;
     blink->status_pixel_blink_index = filled_segments - 1;
 
     for (uint8_t i = 0; i < ARRAY_SIZE(battery_status_pixels); i++) {
@@ -784,7 +827,8 @@ static int led_battery_listener_cb(const zmk_event_t *eh) {
         LOG_BATTERY(battery_level, CRITICAL);
 
         struct blink_item blink = {.duration_ms = CONFIG_RGBLED_WIDGET_BATTERY_BLINK_MS,
-                                   .color = CONFIG_RGBLED_WIDGET_BATTERY_COLOR_CRITICAL};
+                                   .color = CONFIG_RGBLED_WIDGET_BATTERY_COLOR_CRITICAL,
+                                   .blink = true};
         configure_battery_status_pixels(&blink, battery_level);
         k_msgq_put(&led_msgq, &blink, K_NO_WAIT);
     }
@@ -921,8 +965,10 @@ extern void led_process_thread(void *d0, void *d1, void *d2) {
             uint32_t restore_ms =
                 blink.sleep_ms > 0 ? blink.sleep_ms : CONFIG_RGBLED_WIDGET_INTERVAL_MS;
 
-            // Show one solid status color, then restore the user-visible underglow state.
-            if (blink.blink_until_connected) {
+            // Show the requested status indication, then restore the user-visible underglow state.
+            if (blink.animate_status_pixels) {
+                animate_status_pixels(&blink);
+            } else if (blink.blink_until_connected) {
                 while (should_continue_advertising_blink()) {
                     set_indicator_leds(&blink, blink.color, CONFIG_RGBLED_WIDGET_INTERVAL_MS);
 

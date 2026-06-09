@@ -49,7 +49,7 @@ config RGBLED_WIDGET_BATTERY_SHOW_ONLY_PERIPHERALS
 endchoice
 
 config RGBLED_WIDGET_BATTERY_BLINK_MS
-    int "Duration of battery level blink in ms"
+    int "Duration of battery indication in ms"
     default 2000
 
 config RGBLED_WIDGET_BATTERY_LEVEL_HIGH
