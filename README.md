@@ -12,6 +12,11 @@ This is a [ZMK module](https://zmk.dev/docs/features/modules) that shows keyboar
 
 - Shows battery status on boot by default. Disable with `CONFIG_RGBLED_WIDGET_BOOT_SHOW_BATTERY=n`.
 - Provides `&ind_bat` for showing battery status on demand from a keymap.
+- When showing the current-side battery, the widget samples the configured `zmk,battery` sensor
+  directly instead of using ZMK's cached value, so the indication reflects charging progress even
+  after the keyboard idles.
+- Battery sampling and indication preparation run on ZMK's low-priority work queue so `&ind_bat`
+  does not block key processing while waiting for the sensor.
 - Uses the configured battery colors:
   - Green: at or above `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_HIGH`
   - Yellow: at or above `CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_LOW`
@@ -42,9 +47,16 @@ When peripheral levels are included, the widget displays the lowest available no
   - Red: disconnected
   - Cyan: USB endpoint active when `CONFIG_RGBLED_WIDGET_CONN_SHOW_USB=y`
 - Enable `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL` to show connectivity on a single underglow status pixel.
+- Enable `CONFIG_RGBLED_WIDGET_PAIRING_LED` to blink a discrete `blue_led` devicetree LED with the
+  same cadence as the underglow pairing indication. Unlike the underglow, this LED remains active
+  in the idle state and turns off only when pairing ends or the keyboard actually enters sleep.
 - BLE profile status pixels can be configured per profile with `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_0` through `_4`.
 - When possible, the widget maps the active BLE profile to the underglow pixel for the key bound to `&bt BT_SEL <profile>`.
 - Advertising and disconnected states blink; connected states show solid color for the configured duration.
+- The indicator for an open profile blinks until it connects or inactivity reaches
+  `CONFIG_ZMK_IDLE_SLEEP_TIMEOUT`. The widget stops that indication at the timeout even while USB
+  power prevents the keyboard from entering deep sleep, and resumes it on later activity if the
+  profile is still open.
 - Duplicate connectivity indications are suppressed when the state has not changed.
 
 ### Layer State
@@ -196,6 +208,7 @@ The behavior runs on every keyboard half where `CONFIG_RGBLED_WIDGET=y` is enabl
 | `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_2` | Connectivity status pixel for BLE profile 2 | `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX` |
 | `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_3` | Connectivity status pixel for BLE profile 3 | `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX` |
 | `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_4` | Connectivity status pixel for BLE profile 4 | `CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX` |
+| `CONFIG_RGBLED_WIDGET_PAIRING_LED` | Blink the discrete `blue_led` while pairing | `n` |
 | `CONFIG_RGBLED_WIDGET_CONN_COLOR_CONNECTED` | Color for connected BLE status | Blue (`4`) |
 | `CONFIG_RGBLED_WIDGET_CONN_COLOR_ADVERTISING` | Color for advertising BLE status | Yellow (`3`) |
 | `CONFIG_RGBLED_WIDGET_CONN_COLOR_DISCONNECTED` | Color for disconnected BLE status | Red (`1`) |

@@ -152,6 +152,16 @@ config RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_4
     int "RGB underglow pixel index for BLE profile 4 connectivity status"
     default RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX
 
+config RGBLED_WIDGET_PAIRING_LED
+    bool "Blink the blue_led devicetree LED while pairing"
+    depends on ZMK_BLE && GPIO
+    select LED
+    select LED_GPIO
+    help
+        Blink the LED whose devicetree node label is blue_led while the active BLE profile is
+        open. The LED remains active while the keyboard is idle and turns off only when pairing
+        ends or the keyboard enters sleep.
+
 config RGBLED_WIDGET_OUTPUT_BLINK_MS  # DEPRECATED, do not use
     int
     default 1000

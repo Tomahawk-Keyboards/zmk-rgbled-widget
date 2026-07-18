@@ -1,13 +1,17 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/drivers/led.h>
+#include <zephyr/drivers/sensor.h>
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
 
 #include <errno.h>
 #include <string.h>
 
 #include <dt-bindings/zmk/bt.h>
+#include <zmk/activity.h>
 #include <zmk/battery.h>
 #include <zmk/behavior.h>
 #include <zmk/ble.h>
@@ -22,6 +26,7 @@
 #include <zmk/matrix.h>
 #include <zmk/rgb_underglow.h>
 #include <zmk/split/bluetooth/peripheral.h>
+#include <zmk/workqueue.h>
 
 #include <zmk/split/central.h>
 
@@ -40,6 +45,12 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 BUILD_ASSERT(!(SHOW_LAYER_CHANGE && SHOW_LAYER_COLORS),
              "CONFIG_RGBLED_WIDGET_SHOW_LAYER_CHANGE and CONFIG_RGBLED_WIDGET_SHOW_LAYER_COLORS "
              "are mutually exclusive");
+
+#if IS_ENABLED(CONFIG_RGBLED_WIDGET_PAIRING_LED)
+BUILD_ASSERT(DT_NODE_HAS_STATUS(DT_NODELABEL(blue_led), okay),
+             "CONFIG_RGBLED_WIDGET_PAIRING_LED requires a blue_led devicetree node");
+static const struct led_dt_spec pairing_led = LED_DT_SPEC_GET(DT_NODELABEL(blue_led));
+#endif
 
 // map from color values to names, for logging
 static const char *color_names[] = {"black", "red",     "green", "yellow",
@@ -435,13 +446,25 @@ static uint16_t get_ble_profile_status_pixel(uint8_t profile_index) {
                : CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX;
 }
 
-static bool should_continue_advertising_blink(void) {
+static atomic_t connectivity_indications_enabled = ATOMIC_INIT(1);
+static atomic_t connectivity_indications_generation = ATOMIC_INIT(0);
+
+static bool active_profile_is_pairing(void) {
 #if (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)) &&                 \
     IS_ENABLED(CONFIG_ZMK_BLE)
     return zmk_ble_active_profile_is_open() && !zmk_ble_active_profile_is_connected();
 #else
     return false;
 #endif
+}
+
+static bool should_continue_advertising_blink(void) {
+    return atomic_get(&connectivity_indications_enabled) && active_profile_is_pairing();
+}
+
+static bool should_continue_advertising_blink_for_generation(atomic_val_t generation) {
+    return generation == atomic_get(&connectivity_indications_generation) &&
+           should_continue_advertising_blink();
 }
 
 // define message queue of LED work items, that will be processed by a
@@ -455,6 +478,65 @@ static struct k_work_delayable connectivity_status_work;
 static bool connectivity_status_active;
 static bool connectivity_status_lit;
 static int64_t connectivity_status_until;
+
+#if IS_ENABLED(CONFIG_RGBLED_WIDGET_PAIRING_LED)
+static struct k_work_delayable pairing_led_work;
+static bool pairing_led_active;
+static bool pairing_led_lit;
+static bool pairing_led_sleeping;
+
+static void set_pairing_led(bool on) {
+    int ret = led_set_brightness_dt(&pairing_led, on ? 100 : 0);
+
+    if (ret < 0) {
+        LOG_ERR("Failed to set pairing LED (%d)", ret);
+    }
+}
+
+static void stop_pairing_led(void) {
+    if (!pairing_led_active && !pairing_led_lit) {
+        return;
+    }
+
+    pairing_led_active = false;
+    pairing_led_lit = false;
+    k_work_cancel_delayable(&pairing_led_work);
+    set_pairing_led(false);
+}
+
+static void pairing_led_cb(struct k_work *work) {
+    ARG_UNUSED(work);
+
+    if (!pairing_led_active || pairing_led_sleeping || !active_profile_is_pairing()) {
+        pairing_led_active = false;
+        pairing_led_lit = false;
+        set_pairing_led(false);
+        return;
+    }
+
+    pairing_led_lit = !pairing_led_lit;
+    set_pairing_led(pairing_led_lit);
+    k_work_reschedule(&pairing_led_work, K_MSEC(CONFIG_RGBLED_WIDGET_INTERVAL_MS));
+}
+
+static void update_pairing_led(void) {
+    if (pairing_led_sleeping || !active_profile_is_pairing()) {
+        stop_pairing_led();
+        return;
+    }
+
+    if (!device_is_ready(pairing_led.dev)) {
+        LOG_ERR("Pairing LED device is not ready");
+        return;
+    }
+
+    if (!pairing_led_active) {
+        pairing_led_active = true;
+        pairing_led_lit = false;
+        k_work_reschedule(&pairing_led_work, K_NO_WAIT);
+    }
+}
+#endif
 
 static bool connectivity_matches_last(const struct blink_item *blink) {
     return last_connectivity_valid && last_connectivity.color == blink->color &&
@@ -473,10 +555,26 @@ static void clear_status_channel(uint8_t channel) {
     }
 }
 
+static void stop_connectivity_status(void) {
+    if (!connectivity_status_active) {
+        return;
+    }
+
+    connectivity_status_active = false;
+    connectivity_status_lit = false;
+    k_work_cancel_delayable(&connectivity_status_work);
+    clear_status_channel(active_connectivity.status_channel);
+}
+
 static void connectivity_status_cb(struct k_work *work) {
     ARG_UNUSED(work);
 
     if (!connectivity_status_active) {
+        return;
+    }
+
+    if (!atomic_get(&connectivity_indications_enabled)) {
+        stop_connectivity_status();
         return;
     }
 
@@ -538,13 +636,19 @@ static void stop_solid_connectivity_status(void) {
         return;
     }
 
-    k_work_cancel_delayable(&connectivity_status_work);
-    clear_status_channel(active_connectivity.status_channel);
-    connectivity_status_active = false;
-    connectivity_status_lit = false;
+    stop_connectivity_status();
 }
 
 static void indicate_connectivity_internal(void) {
+#if IS_ENABLED(CONFIG_RGBLED_WIDGET_PAIRING_LED)
+    update_pairing_led();
+#endif
+
+    if (!atomic_get(&connectivity_indications_enabled)) {
+        LOG_DBG("Skipping connectivity indication while inactive");
+        return;
+    }
+
     struct blink_item blink = {.duration_ms = CONFIG_RGBLED_WIDGET_CONN_BLINK_MS,
                                .status_pixel_index = CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX,
                                .status_channel = ZMK_RGB_UNDERGLOW_STATUS_CHANNEL_CONNECTIVITY,
@@ -621,6 +725,86 @@ static struct k_work_delayable indicate_connectivity_work;
 static void indicate_connectivity_cb(struct k_work *work) { indicate_connectivity_internal(); }
 void indicate_connectivity() { k_work_reschedule(&indicate_connectivity_work, K_MSEC(16)); }
 
+#if IS_ENABLED(CONFIG_ZMK_SLEEP)
+static void stop_connectivity_indications(void) {
+    atomic_set(&connectivity_indications_enabled, 0);
+    atomic_inc(&connectivity_indications_generation);
+    k_work_cancel_delayable(&indicate_connectivity_work);
+    stop_connectivity_status();
+    last_connectivity_valid = false;
+}
+
+static void resume_connectivity_indications(void) {
+    bool should_resume = !atomic_get(&connectivity_indications_enabled);
+
+    atomic_set(&connectivity_indications_enabled, 1);
+
+    if (should_resume && initialized) {
+        indicate_connectivity();
+    }
+}
+
+static void connectivity_inactivity_cb(struct k_work *work) {
+    ARG_UNUSED(work);
+
+    // Activity may resume while cancellation races with this work item. In that case the current
+    // ZMK state wins and the indicator remains enabled.
+    if (zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE) {
+        return;
+    }
+
+    LOG_INF("Inactivity reached sleep timeout, stopping connectivity indication");
+    stop_connectivity_indications();
+
+    // Close the remaining check/stop race if activity resumed between the check above and the
+    // atomic flag update.
+    if (zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE) {
+        resume_connectivity_indications();
+    }
+}
+
+K_WORK_DELAYABLE_DEFINE(connectivity_inactivity_work, connectivity_inactivity_cb);
+
+static int led_activity_listener_cb(const zmk_event_t *eh) {
+    const struct zmk_activity_state_changed *ev = as_zmk_activity_state_changed(eh);
+
+    if (ev == NULL) {
+        return -ENOTSUP;
+    }
+
+    switch (ev->state) {
+    case ZMK_ACTIVITY_ACTIVE:
+        k_work_cancel_delayable(&connectivity_inactivity_work);
+        resume_connectivity_indications();
+#if IS_ENABLED(CONFIG_RGBLED_WIDGET_PAIRING_LED)
+        pairing_led_sleeping = false;
+        update_pairing_led();
+#endif
+        break;
+    case ZMK_ACTIVITY_IDLE:
+        // ZMK does not enter sleep while USB power is present. Start a timer for the portion of
+        // the sleep timeout that remains after the idle transition so pairing indication still
+        // stops at CONFIG_ZMK_IDLE_SLEEP_TIMEOUT while the keyboard is charging.
+        k_work_reschedule(&connectivity_inactivity_work,
+                          K_MSEC(MAX(0, CONFIG_ZMK_IDLE_SLEEP_TIMEOUT - CONFIG_ZMK_IDLE_TIMEOUT)));
+        break;
+    case ZMK_ACTIVITY_SLEEP:
+        k_work_cancel_delayable(&connectivity_inactivity_work);
+        stop_connectivity_indications();
+#if IS_ENABLED(CONFIG_RGBLED_WIDGET_PAIRING_LED)
+        pairing_led_sleeping = true;
+        stop_pairing_led();
+#endif
+        break;
+    }
+
+    return 0;
+}
+
+ZMK_LISTENER(led_activity_listener, led_activity_listener_cb);
+ZMK_SUBSCRIPTION(led_activity_listener, zmk_activity_state_changed);
+#endif // IS_ENABLED(CONFIG_ZMK_SLEEP)
+
 static int led_output_listener_cb(const zmk_event_t *eh) {
     if (initialized) {
         indicate_connectivity();
@@ -644,6 +828,36 @@ ZMK_SUBSCRIPTION(led_output_listener, zmk_split_peripheral_status_changed);
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
+#if IS_ENABLED(CONFIG_RGBLED_WIDGET_BATTERY_SHOW_SELF) ||                                          \
+    IS_ENABLED(CONFIG_RGBLED_WIDGET_BATTERY_SHOW_PERIPHERALS)
+static int read_fresh_battery_level(uint8_t *battery_level) {
+#if DT_HAS_CHOSEN(zmk_battery)
+    static const struct device *const battery = DEVICE_DT_GET(DT_CHOSEN(zmk_battery));
+    struct sensor_value state_of_charge;
+
+    if (!device_is_ready(battery)) {
+        return -ENODEV;
+    }
+
+    int ret = sensor_sample_fetch_chan(battery, SENSOR_CHAN_GAUGE_STATE_OF_CHARGE);
+    if (ret != 0) {
+        return ret;
+    }
+
+    ret = sensor_channel_get(battery, SENSOR_CHAN_GAUGE_STATE_OF_CHARGE, &state_of_charge);
+    if (ret != 0) {
+        return ret;
+    }
+
+    *battery_level = CLAMP(state_of_charge.val1, 0, 100);
+    return 0;
+#else
+    ARG_UNUSED(battery_level);
+    return -ENODEV;
+#endif
+}
+#endif
+
 static inline uint8_t get_battery_color(uint8_t battery_level) {
     if (battery_level == 0) {
         LOG_INF("Battery level undetermined (zero), indicating %s",
@@ -808,7 +1022,7 @@ static bool configure_layer_status_pixels(struct blink_item *blink,
 #endif
 }
 
-void indicate_battery(void) {
+static void indicate_battery_internal(void) {
     struct blink_item blink = {.duration_ms = CONFIG_RGBLED_WIDGET_BATTERY_BLINK_MS};
     int retry = 0;
     bool has_battery_level = false;
@@ -818,11 +1032,18 @@ void indicate_battery(void) {
 
 #if IS_ENABLED(CONFIG_RGBLED_WIDGET_BATTERY_SHOW_SELF) ||                                          \
     IS_ENABLED(CONFIG_RGBLED_WIDGET_BATTERY_SHOW_PERIPHERALS)
-    uint8_t battery_level = zmk_battery_state_of_charge();
-    while (battery_level == 0 && retry++ < 10) {
-        k_sleep(K_MSEC(100));
+    uint8_t battery_level;
+    int ret = read_fresh_battery_level(&battery_level);
+
+    if (ret != 0) {
+        LOG_WRN("Unable to refresh battery level (%d), using ZMK's cached value", ret);
         battery_level = zmk_battery_state_of_charge();
-    };
+
+        while (battery_level == 0 && retry++ < 10) {
+            k_sleep(K_MSEC(100));
+            battery_level = zmk_battery_state_of_charge();
+        };
+    }
 
     battery_level_to_show = battery_level;
     has_battery_level = true;
@@ -863,6 +1084,21 @@ void indicate_battery(void) {
         blink.color = get_battery_color(battery_level_to_show);
         configure_battery_status_pixels(&blink, battery_level_to_show);
         k_msgq_put(&led_msgq, &blink, K_NO_WAIT);
+    }
+}
+
+static void indicate_battery_cb(struct k_work *work) {
+    ARG_UNUSED(work);
+    indicate_battery_internal();
+}
+
+K_WORK_DEFINE(indicate_battery_work, indicate_battery_cb);
+
+void indicate_battery(void) {
+    int ret = k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &indicate_battery_work);
+
+    if (ret < 0) {
+        LOG_ERR("Failed to queue battery indication (%d)", ret);
     }
 }
 
@@ -996,6 +1232,10 @@ extern void led_process_thread(void *d0, void *d1, void *d2) {
     k_work_init_delayable(&indicate_connectivity_work, indicate_connectivity_cb);
     k_work_init_delayable(&connectivity_status_work, connectivity_status_cb);
 
+#if IS_ENABLED(CONFIG_RGBLED_WIDGET_PAIRING_LED)
+    k_work_init_delayable(&pairing_led_work, pairing_led_cb);
+#endif
+
 #if SHOW_LAYER_CHANGE
     k_work_init_delayable(&layer_indicate_work, indicate_layer_cb);
 #endif
@@ -1019,10 +1259,12 @@ extern void led_process_thread(void *d0, void *d1, void *d2) {
             if (blink.animate_status_pixels) {
                 animate_status_pixels(&blink);
             } else if (blink.blink_until_connected) {
-                while (should_continue_advertising_blink()) {
+                atomic_val_t generation = atomic_get(&connectivity_indications_generation);
+
+                while (should_continue_advertising_blink_for_generation(generation)) {
                     set_indicator_leds(&blink, blink.color, CONFIG_RGBLED_WIDGET_INTERVAL_MS);
 
-                    if (!should_continue_advertising_blink()) {
+                    if (!should_continue_advertising_blink_for_generation(generation)) {
                         break;
                     }
 
@@ -1049,7 +1291,7 @@ extern void led_process_thread(void *d0, void *d1, void *d2) {
             }
 
             // Restore the borrowed underglow state before waiting for the next queued indicator.
-            if (has_saved_state) {
+            if (has_saved_state && zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE) {
                 restore_underglow_state(&saved_state, 0);
             } else {
                 set_rgb_leds(0, 0);
@@ -1098,6 +1340,11 @@ extern void led_init_thread(void *d0, void *d1, void *d2) {
     LOG_INF("Indicating initial connectivity status");
     indicate_connectivity();
 #endif // IS_ENABLED(CONFIG_RGBLED_WIDGET_BOOT_SHOW_CONNECTIVITY)
+
+#if IS_ENABLED(CONFIG_RGBLED_WIDGET_PAIRING_LED)
+    // The discrete pairing LED is independent of whether the boot connectivity indication is on.
+    update_pairing_led();
+#endif
 
 #if SHOW_LAYER_COLORS
     LOG_INF("Setting initial layer color");
