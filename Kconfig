@@ -153,14 +153,14 @@ config RGBLED_WIDGET_CONN_STATUS_PIXEL_PROFILE_4
     default RGBLED_WIDGET_CONN_STATUS_PIXEL_INDEX
 
 config RGBLED_WIDGET_PAIRING_LED
-    bool "Blink the blue_led devicetree LED while pairing"
-    depends on ZMK_BLE && GPIO
+    bool "Blink a discrete blue LED while pairing"
+    depends on ZMK_BLE
     select LED
-    select LED_GPIO
     help
-        Blink the LED whose devicetree node label is blue_led while the active BLE profile is
-        open. The LED remains active while the keyboard is idle and turns off only when pairing
-        ends or the keyboard enters sleep.
+        Blink the LED referenced by the led-blue devicetree alias while the active BLE profile is
+        open. For compatibility, a node labeled blue_led is also accepted. The LED remains active
+        while the keyboard is idle and turns off only when pairing ends or the keyboard enters
+        sleep.
 
 config RGBLED_WIDGET_OUTPUT_BLINK_MS  # DEPRECATED, do not use
     int

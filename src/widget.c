@@ -47,9 +47,14 @@ BUILD_ASSERT(!(SHOW_LAYER_CHANGE && SHOW_LAYER_COLORS),
              "are mutually exclusive");
 
 #if IS_ENABLED(CONFIG_RGBLED_WIDGET_PAIRING_LED)
-BUILD_ASSERT(DT_NODE_HAS_STATUS(DT_NODELABEL(blue_led), okay),
-             "CONFIG_RGBLED_WIDGET_PAIRING_LED requires a blue_led devicetree node");
-static const struct led_dt_spec pairing_led = LED_DT_SPEC_GET(DT_NODELABEL(blue_led));
+#if DT_NODE_HAS_STATUS(DT_ALIAS(led_blue), okay)
+#define RGBLED_WIDGET_PAIRING_LED_NODE DT_ALIAS(led_blue)
+#elif DT_NODE_HAS_STATUS(DT_NODELABEL(blue_led), okay)
+#define RGBLED_WIDGET_PAIRING_LED_NODE DT_NODELABEL(blue_led)
+#else
+#error "CONFIG_RGBLED_WIDGET_PAIRING_LED requires an enabled led-blue alias or blue_led node"
+#endif
+static const struct led_dt_spec pairing_led = LED_DT_SPEC_GET(RGBLED_WIDGET_PAIRING_LED_NODE);
 #endif
 
 // map from color values to names, for logging
@@ -830,15 +835,31 @@ ZMK_SUBSCRIPTION(led_output_listener, zmk_split_peripheral_status_changed);
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
 #if IS_ENABLED(CONFIG_RGBLED_WIDGET_BATTERY_SHOW_SELF) ||                                          \
     IS_ENABLED(CONFIG_RGBLED_WIDGET_BATTERY_SHOW_PERIPHERALS)
+#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING_FETCH_MODE_LITHIUM_VOLTAGE)
+// Keep this approximation aligned with ZMK's voltage-based battery reporting.
+static uint8_t lithium_ion_mv_to_pct(int32_t battery_mv) {
+    if (battery_mv >= 4200) {
+        return 100;
+    }
+
+    if (battery_mv <= 3450) {
+        return 0;
+    }
+
+    return battery_mv * 2 / 15 - 459;
+}
+#endif
+
 static int read_fresh_battery_level(uint8_t *battery_level) {
 #if DT_HAS_CHOSEN(zmk_battery)
     static const struct device *const battery = DEVICE_DT_GET(DT_CHOSEN(zmk_battery));
-    struct sensor_value state_of_charge;
 
     if (!device_is_ready(battery)) {
         return -ENODEV;
     }
 
+#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING_FETCH_MODE_STATE_OF_CHARGE)
+    struct sensor_value state_of_charge;
     int ret = sensor_sample_fetch_chan(battery, SENSOR_CHAN_GAUGE_STATE_OF_CHARGE);
     if (ret != 0) {
         return ret;
@@ -851,6 +872,25 @@ static int read_fresh_battery_level(uint8_t *battery_level) {
 
     *battery_level = CLAMP(state_of_charge.val1, 0, 100);
     return 0;
+#elif IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING_FETCH_MODE_LITHIUM_VOLTAGE)
+    struct sensor_value voltage;
+    int ret = sensor_sample_fetch_chan(battery, SENSOR_CHAN_VOLTAGE);
+    if (ret != 0) {
+        return ret;
+    }
+
+    ret = sensor_channel_get(battery, SENSOR_CHAN_VOLTAGE, &voltage);
+    if (ret != 0) {
+        return ret;
+    }
+
+    int32_t battery_mv = voltage.val1 * 1000 + voltage.val2 / 1000;
+    *battery_level = lithium_ion_mv_to_pct(battery_mv);
+    return 0;
+#else
+    ARG_UNUSED(battery_level);
+    return -ENOTSUP;
+#endif
 #else
     ARG_UNUSED(battery_level);
     return -ENODEV;
@@ -1022,31 +1062,51 @@ static bool configure_layer_status_pixels(struct blink_item *blink,
 #endif
 }
 
-static void indicate_battery_internal(void) {
-    struct blink_item blink = {.duration_ms = CONFIG_RGBLED_WIDGET_BATTERY_BLINK_MS};
-    int retry = 0;
-    bool has_battery_level = false;
-    uint8_t battery_level_to_show = 0;
+struct battery_indication_state {
+    uint32_t retry_count;
+    bool self_level_valid;
+    uint8_t self_level;
+};
 
-    stop_solid_connectivity_status();
+static struct battery_indication_state battery_indication;
+
+#define SELF_BATTERY_RETRY_COUNT 10
+#define PERIPHERAL_BATTERY_RETRY_COUNT                                                             \
+    ((CONFIG_RGBLED_WIDGET_BATTERY_BLINK_MS + CONFIG_RGBLED_WIDGET_INTERVAL_MS) / 100)
+
+static bool prepare_battery_indication(struct blink_item *blink, bool *has_battery_level) {
+    *has_battery_level = false;
+    bool should_retry = false;
+    uint8_t battery_level_to_show = 0;
 
 #if IS_ENABLED(CONFIG_RGBLED_WIDGET_BATTERY_SHOW_SELF) ||                                          \
     IS_ENABLED(CONFIG_RGBLED_WIDGET_BATTERY_SHOW_PERIPHERALS)
-    uint8_t battery_level;
-    int ret = read_fresh_battery_level(&battery_level);
+    if (!battery_indication.self_level_valid) {
+        uint8_t battery_level;
+        int ret = read_fresh_battery_level(&battery_level);
 
-    if (ret != 0) {
-        LOG_WRN("Unable to refresh battery level (%d), using ZMK's cached value", ret);
-        battery_level = zmk_battery_state_of_charge();
+        if (ret != 0) {
+            if (battery_indication.retry_count == 0) {
+                LOG_WRN("Unable to refresh battery level (%d), using ZMK's cached value", ret);
+            }
 
-        while (battery_level == 0 && retry++ < 10) {
-            k_sleep(K_MSEC(100));
             battery_level = zmk_battery_state_of_charge();
-        };
+
+            if (battery_level == 0 && battery_indication.retry_count < SELF_BATTERY_RETRY_COUNT) {
+                should_retry = true;
+            }
+        }
+
+        if (!should_retry) {
+            battery_indication.self_level = battery_level;
+            battery_indication.self_level_valid = true;
+        }
     }
 
-    battery_level_to_show = battery_level;
-    has_battery_level = true;
+    if (battery_indication.self_level_valid) {
+        battery_level_to_show = battery_indication.self_level;
+        *has_battery_level = true;
+    }
 #endif
 
 #if IS_ENABLED(CONFIG_RGBLED_WIDGET_BATTERY_SHOW_PERIPHERALS) ||                                   \
@@ -1055,47 +1115,70 @@ static void indicate_battery_internal(void) {
         uint8_t peripheral_level;
         int ret = zmk_split_central_get_peripheral_battery_level(i, &peripheral_level);
         if (ret == 0) {
-            retry = 0;
-            while (peripheral_level == 0 && retry++ < (CONFIG_RGBLED_WIDGET_BATTERY_BLINK_MS +
-                                                       CONFIG_RGBLED_WIDGET_INTERVAL_MS) /
-                                                          100) {
-                k_sleep(K_MSEC(100));
-                zmk_split_central_get_peripheral_battery_level(i, &peripheral_level);
-            }
-
             if (peripheral_level == 0) {
+                if (battery_indication.retry_count < PERIPHERAL_BATTERY_RETRY_COUNT) {
+                    should_retry = true;
+                    continue;
+                }
+
                 LOG_INF("Skipping undetermined battery level for peripheral %d", i);
                 continue;
             }
 
-            LOG_INF("Got battery level for peripheral %d:", i);
-            if (!has_battery_level ||
+            LOG_DBG("Got battery level for peripheral %d: %d", i, peripheral_level);
+            if (!*has_battery_level ||
                 (battery_level_to_show != 0 && peripheral_level < battery_level_to_show)) {
                 battery_level_to_show = peripheral_level;
             }
-            has_battery_level = true;
+            *has_battery_level = true;
         } else {
             LOG_ERR("Error looking up battery level for peripheral %d", i);
         }
     }
 #endif
 
+    if (should_retry) {
+        return false;
+    }
+
+    if (*has_battery_level) {
+        blink->color = get_battery_color(battery_level_to_show);
+        configure_battery_status_pixels(blink, battery_level_to_show);
+    }
+
+    return true;
+}
+
+static struct k_work_delayable indicate_battery_work;
+
+static void indicate_battery_cb(struct k_work *work) {
+    ARG_UNUSED(work);
+
+    struct blink_item blink = {.duration_ms = CONFIG_RGBLED_WIDGET_BATTERY_BLINK_MS};
+    bool has_battery_level;
+
+    if (!prepare_battery_indication(&blink, &has_battery_level)) {
+        battery_indication.retry_count++;
+        int ret = k_work_reschedule_for_queue(zmk_workqueue_lowprio_work_q(),
+                                              &indicate_battery_work, K_MSEC(100));
+        if (ret < 0) {
+            LOG_ERR("Failed to schedule battery indication retry (%d)", ret);
+            battery_indication = (struct battery_indication_state){0};
+        }
+        return;
+    }
+
+    battery_indication = (struct battery_indication_state){0};
+    stop_solid_connectivity_status();
+
     if (has_battery_level) {
-        blink.color = get_battery_color(battery_level_to_show);
-        configure_battery_status_pixels(&blink, battery_level_to_show);
         k_msgq_put(&led_msgq, &blink, K_NO_WAIT);
     }
 }
 
-static void indicate_battery_cb(struct k_work *work) {
-    ARG_UNUSED(work);
-    indicate_battery_internal();
-}
-
-K_WORK_DEFINE(indicate_battery_work, indicate_battery_cb);
-
 void indicate_battery(void) {
-    int ret = k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &indicate_battery_work);
+    int ret = k_work_reschedule_for_queue(zmk_workqueue_lowprio_work_q(), &indicate_battery_work,
+                                          K_NO_WAIT);
 
     if (ret < 0) {
         LOG_ERR("Failed to queue battery indication (%d)", ret);
@@ -1231,6 +1314,9 @@ extern void led_process_thread(void *d0, void *d1, void *d2) {
 
     k_work_init_delayable(&indicate_connectivity_work, indicate_connectivity_cb);
     k_work_init_delayable(&connectivity_status_work, connectivity_status_cb);
+#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
+    k_work_init_delayable(&indicate_battery_work, indicate_battery_cb);
+#endif
 
 #if IS_ENABLED(CONFIG_RGBLED_WIDGET_PAIRING_LED)
     k_work_init_delayable(&pairing_led_work, pairing_led_cb);
