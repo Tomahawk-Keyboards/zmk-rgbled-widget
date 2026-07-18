@@ -75,7 +75,12 @@ Layer indicators only run on non-split keyboards and split centrals because peri
 
 ### Underglow Behavior
 
-Status indicators temporarily borrow the underglow strip and then restore the previous underglow state, including on/off state, color, and effect. If status-channel pixel APIs are unavailable, single-pixel and five-pixel status indicators fall back to whole-strip indication.
+Status indicators temporarily borrow the underglow strip and then restore the previous underglow
+state, including on/off state, color, and effect. Turning the underglow on or off while an indicator
+is visible takes precedence over the saved state, so the widget does not undo the user's change.
+Status-channel indicators leave the underlying underglow state untouched. If status-channel pixel
+APIs are unavailable, single-pixel and five-pixel status indicators fall back to whole-strip
+indication.
 
 ## Installation
 

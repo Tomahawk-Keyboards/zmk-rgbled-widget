@@ -137,6 +137,12 @@ struct underglow_state {
     int effect;
 };
 
+struct indicator_led_result {
+    bool borrowed_underglow;
+    bool external_state_change;
+    bool expected_on;
+};
+
 static int save_underglow_state(struct underglow_state *state) {
     int ret = zmk_rgb_underglow_get_state(&state->on);
     if (ret < 0) {
@@ -288,11 +294,11 @@ static bool set_status_pixels_led(const struct blink_item *blink, uint8_t color,
     return false;
 }
 
-static void set_indicator_leds(const struct blink_item *blink, uint8_t color,
-                               uint32_t duration_ms) {
+static struct indicator_led_result set_indicator_leds(const struct blink_item *blink, uint8_t color,
+                                                      uint32_t duration_ms) {
     if (blink->use_status_pixels) {
         if (set_status_pixels_led(blink, color, duration_ms)) {
-            return;
+            return (struct indicator_led_result){0};
         }
 
         if (blink->status_pixels_only) {
@@ -300,26 +306,48 @@ static void set_indicator_leds(const struct blink_item *blink, uint8_t color,
                 k_sleep(K_MSEC(duration_ms));
             }
 
-            return;
+            return (struct indicator_led_result){0};
         }
     }
 
     if (blink->use_status_pixel &&
         set_status_pixel_led(blink->status_channel, blink->status_pixel_index, color,
                              duration_ms)) {
-        return;
+        return (struct indicator_led_result){0};
     }
 
     set_rgb_leds(color, duration_ms);
+
+    struct indicator_led_result result = {
+        .borrowed_underglow = true,
+        .expected_on = (color & 0x07) != 0,
+    };
+    bool current_on;
+
+    if (zmk_rgb_underglow_get_state(&current_on) == 0 && current_on != result.expected_on) {
+        result.external_state_change = true;
+    }
+
+    return result;
 }
 
-static void animate_status_pixels(const struct blink_item *blink) {
+static void merge_indicator_led_result(struct indicator_led_result *result,
+                                       const struct indicator_led_result *step) {
+    if (step->borrowed_underglow) {
+        result->borrowed_underglow = true;
+        result->expected_on = step->expected_on;
+    }
+
+    result->external_state_change |= step->external_state_change;
+}
+
+static struct indicator_led_result animate_status_pixels(const struct blink_item *blink) {
+    struct indicator_led_result result = {0};
     uint8_t pixel_count = MIN(blink->status_pixel_count, (uint8_t)STATUS_PIXELS_MAX);
     uint8_t fill_count = MIN(blink->status_pixel_fill_count, pixel_count);
 
     if (fill_count == 0) {
-        set_indicator_leds(blink, blink->color, blink->duration_ms);
-        return;
+        return set_indicator_leds(blink, blink->color, blink->duration_ms);
     }
 
     uint32_t elapsed_ms = 0;
@@ -344,13 +372,23 @@ static void animate_status_pixels(const struct blink_item *blink) {
         uint32_t remaining_ms = blink->duration_ms - elapsed_ms;
         uint32_t current_step_ms = MIN(step_ms, remaining_ms);
 
-        set_indicator_leds(&step, blink->color, current_step_ms);
+        struct indicator_led_result step_result =
+            set_indicator_leds(&step, blink->color, current_step_ms);
+        merge_indicator_led_result(&result, &step_result);
         elapsed_ms += current_step_ms;
+
+        if (result.external_state_change) {
+            return result;
+        }
     }
 
     if (elapsed_ms < blink->duration_ms) {
-        set_indicator_leds(blink, blink->color, blink->duration_ms - elapsed_ms);
+        struct indicator_led_result step_result =
+            set_indicator_leds(blink, blink->color, blink->duration_ms - elapsed_ms);
+        merge_indicator_led_result(&result, &step_result);
     }
+
+    return result;
 }
 
 static bool key_position_to_status_pixel(uint16_t position, uint16_t *pixel) {
@@ -1334,53 +1372,62 @@ extern void led_process_thread(void *d0, void *d1, void *d2) {
             LOG_DBG("Got a blink item from msgq, color %d, duration %d", blink.color,
                     blink.duration_ms);
 
-            // Status blinks temporarily borrow the underglow strip. Snapshot the user-visible
-            // state so battery/connectivity indicators do not leave their color behind.
+            // Status blinks may temporarily borrow the underglow strip. Snapshot the user-visible
+            // state so whole-strip indicators do not leave their color behind.
             struct underglow_state saved_state;
             bool has_saved_state = save_underglow_state(&saved_state) == 0;
             uint32_t restore_ms =
                 blink.sleep_ms > 0 ? blink.sleep_ms : CONFIG_RGBLED_WIDGET_INTERVAL_MS;
+            struct indicator_led_result indicator_result = {0};
 
-            // Show the requested status indication, then restore the user-visible underglow state.
+            // Show the requested status indication, then restore any borrowed underglow state.
             if (blink.animate_status_pixels) {
-                animate_status_pixels(&blink);
+                indicator_result = animate_status_pixels(&blink);
             } else if (blink.blink_until_connected) {
                 atomic_val_t generation = atomic_get(&connectivity_indications_generation);
 
                 while (should_continue_advertising_blink_for_generation(generation)) {
-                    set_indicator_leds(&blink, blink.color, CONFIG_RGBLED_WIDGET_INTERVAL_MS);
+                    struct indicator_led_result step_result =
+                        set_indicator_leds(&blink, blink.color, CONFIG_RGBLED_WIDGET_INTERVAL_MS);
+                    merge_indicator_led_result(&indicator_result, &step_result);
 
-                    if (!should_continue_advertising_blink_for_generation(generation)) {
+                    if (indicator_result.external_state_change ||
+                        !should_continue_advertising_blink_for_generation(generation)) {
                         break;
                     }
 
-                    set_indicator_leds(&blink, 0, CONFIG_RGBLED_WIDGET_INTERVAL_MS);
+                    step_result = set_indicator_leds(&blink, 0, CONFIG_RGBLED_WIDGET_INTERVAL_MS);
+                    merge_indicator_led_result(&indicator_result, &step_result);
+
+                    if (indicator_result.external_state_change) {
+                        break;
+                    }
                 }
             } else if (blink.blink) {
                 uint32_t elapsed_ms = 0;
                 while (elapsed_ms < blink.duration_ms) {
                     uint32_t step_ms = MIN(CONFIG_RGBLED_WIDGET_INTERVAL_MS,
                                            blink.duration_ms - elapsed_ms);
-                    set_indicator_leds(&blink, blink.color, step_ms);
+                    struct indicator_led_result step_result =
+                        set_indicator_leds(&blink, blink.color, step_ms);
+                    merge_indicator_led_result(&indicator_result, &step_result);
                     elapsed_ms += step_ms;
 
-                    if (elapsed_ms >= blink.duration_ms) {
+                    if (indicator_result.external_state_change || elapsed_ms >= blink.duration_ms) {
                         break;
                     }
 
                     step_ms = MIN(CONFIG_RGBLED_WIDGET_INTERVAL_MS, blink.duration_ms - elapsed_ms);
-                    set_indicator_leds(&blink, 0, step_ms);
+                    step_result = set_indicator_leds(&blink, 0, step_ms);
+                    merge_indicator_led_result(&indicator_result, &step_result);
                     elapsed_ms += step_ms;
+
+                    if (indicator_result.external_state_change) {
+                        break;
+                    }
                 }
             } else {
-                set_indicator_leds(&blink, blink.color, blink.duration_ms);
-            }
-
-            // Restore the borrowed underglow state before waiting for the next queued indicator.
-            if (has_saved_state && zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE) {
-                restore_underglow_state(&saved_state, 0);
-            } else {
-                set_rgb_leds(0, 0);
+                indicator_result = set_indicator_leds(&blink, blink.color, blink.duration_ms);
             }
 
 #if IS_ENABLED(CONFIG_RGBLED_WIDGET_CONN_STATUS_PIXEL) ||                                          \
@@ -1389,6 +1436,29 @@ extern void led_process_thread(void *d0, void *d1, void *d2) {
                 clear_status_channel(blink.status_channel);
             }
 #endif
+
+            if (indicator_result.borrowed_underglow) {
+                bool current_on;
+
+                if (zmk_rgb_underglow_get_state(&current_on) == 0) {
+                    if (current_on != indicator_result.expected_on) {
+                        indicator_result.external_state_change = true;
+                    }
+
+                    if (indicator_result.external_state_change && has_saved_state) {
+                        saved_state.on = current_on;
+                    }
+                }
+
+                // Restore the original color/effect, but preserve an on/off change made while the
+                // indicator was visible. Status-channel-only indicators never borrowed this state.
+                if (has_saved_state && zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE) {
+                    restore_underglow_state(&saved_state, 0);
+                } else if (!indicator_result.external_state_change ||
+                           zmk_activity_get_state() != ZMK_ACTIVITY_ACTIVE) {
+                    set_rgb_leds(0, 0);
+                }
+            }
 
             k_sleep(K_MSEC(restore_ms));
 
